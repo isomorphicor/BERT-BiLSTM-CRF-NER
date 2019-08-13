@@ -9,18 +9,52 @@
 import time
 from bert_base.client import BertClient
 
+def print_output(data, type):
+    line = []
+    line.append(type)
+    for i in data:
+        line.append(i.word)
+    print(', '.join(line))
 
 def ner_test():
     with BertClient(show_server_config=False, check_version=False, check_length=False, mode='NER') as bc:
         start_t = time.perf_counter()
         str1 = '1月24日，新华社对外发布了中央对雄安新区的指导意见，洋洋洒洒1.2万多字，17次提到北京，4次提到天津，信息量很大，其实也回答了人们关心的很多问题。'
-        # rst = bc.encode([list(str1)], is_tokenized=True)
-        # str1 = list(str1)
-        rst = bc.encode([str1,str1,str1])
+        str1 = list(str1)
+        rst = bc.encode([str1,str1,str1],is_tokenized=True)
+        print(type(rst))
         print('rst:', rst)
-        print(len(rst[0]))
+        params = None
+        tags=rst[0]
+        tokens=str1
+        rt = Result(params)
+        if len(tokens) > len(tags):
+            tokens = tokens[:len(tags)]
+        person, loc, org = rt.get_result(tokens, tags)
+        print_output(loc, 'LOC')
+        print_output(person, 'PER')
+        print_output(org, 'ORG')
         print(time.perf_counter() - start_t)
 
+def ner(s_lst):
+    with BertClient(show_server_config=False, check_version=False, check_length=False, mode='NER') as bc:
+        lst = [list(_) for _ in s_lst]
+        rst = bc.encode(lst,is_tokenized=True)
+        ents=[]
+        for i in range(len(rst)):
+            params = None
+            tags=rst[i]
+            tokens=lst[i]
+            rt = Result(params)
+            if len(tokens) > len(tags):
+                tokens = tokens[:len(tags)]
+            person, loc, org = rt.get_result(tokens, tags)
+            tri={}
+            tri['loc'] = [_.word for _ in loc]
+            tri['per'] = [_.word for _ in person]
+            tri['org'] = [_.word for _ in org]
+            ents.append(tri)
+        return {'tags':rst.tolist(), 'entities':ents}
 
 def ner_cu_seg():
     """
@@ -46,8 +80,122 @@ def class_test():
         print('rst:', rst)
         print('time used:{}'.format(time.perf_counter() - start_t))
 
+class Pair(object):
+    def __init__(self, word, start, end, type, merge=False):
+        self.__word = word
+        self.__start = start
+        self.__end = end
+        self.__merge = merge
+        self.__types = type
+
+    @property
+    def start(self):
+        return self.__start
+    @property
+    def end(self):
+        return self.__end
+    @property
+    def merge(self):
+        return self.__merge
+    @property
+    def word(self):
+        return self.__word
+
+    @property
+    def types(self):
+        return self.__types
+    @word.setter
+    def word(self, word):
+        self.__word = word
+    @start.setter
+    def start(self, start):
+        self.__start = start
+    @end.setter
+    def end(self, end):
+        self.__end = end
+    @merge.setter
+    def merge(self, merge):
+        self.__merge = merge
+
+    @types.setter
+    def types(self, type):
+        self.__types = type
+
+    def __str__(self) -> str:
+        line = []
+        line.append('entity:{}'.format(self.__word))
+        line.append('start:{}'.format(self.__start))
+        line.append('end:{}'.format(self.__end))
+        line.append('merge:{}'.format(self.__merge))
+        line.append('types:{}'.format(self.__types))
+        return '\t'.join(line)
+
+
+class Result(object):
+    def __init__(self, config):
+        self.config = config
+        self.person = []
+        self.loc = []
+        self.org = []
+        self.others = []
+    def get_result(self, tokens, tags, config=None):
+        # 先获取标注结果
+        self.result_to_json(tokens, tags)
+        return self.person, self.loc, self.org
+
+    def result_to_json(self, string, tags):
+        """
+        将模型标注序列和输入序列结合 转化为结果
+        :param string: 输入序列
+        :param tags: 标注结果
+        :return:
+        """
+        item = {"entities": []}
+        entity_name = ""
+        entity_start = 0
+        idx = 0
+        last_tag = ''
+
+        for char, tag in zip(string, tags):
+            if tag[0] == "S":
+                self.append(char, idx, idx+1, tag[2:])
+                item["entities"].append({"word": char, "start": idx, "end": idx+1, "type":tag[2:]})
+            elif tag[0] == "B":
+                if entity_name != '':
+                    self.append(entity_name, entity_start, idx, last_tag[2:])
+                    item["entities"].append({"word": entity_name, "start": entity_start, "end": idx, "type": last_tag[2:]})
+                    entity_name = ""
+                entity_name += char
+                entity_start = idx
+            elif tag[0] == "I":
+                entity_name += char
+            elif tag[0] == "O":
+                if entity_name != '':
+                    self.append(entity_name, entity_start, idx, last_tag[2:])
+                    item["entities"].append({"word": entity_name, "start": entity_start, "end": idx, "type": last_tag[2:]})
+                    entity_name = ""
+            else:
+                entity_name = ""
+                entity_start = idx
+            idx += 1
+            last_tag = tag
+        if entity_name != '':
+            self.append(entity_name, entity_start, idx, last_tag[2:])
+            item["entities"].append({"word": entity_name, "start": entity_start, "end": idx, "type": last_tag[2:]})
+        return item
+
+    def append(self, word, start, end, tag):
+        if tag == 'LOC':
+            self.loc.append(Pair(word, start, end, 'LOC'))
+        elif tag == 'PER':
+            self.person.append(Pair(word, start, end, 'PER'))
+        elif tag == 'ORG':
+            self.org.append(Pair(word, start, end, 'ORG'))
+        else:
+            self.others.append(Pair(word, start, end, tag))
+
 
 if __name__ == '__main__':
     # class_test()
     ner_test()
-    ner_cu_seg()
+    # ner_cu_seg()
